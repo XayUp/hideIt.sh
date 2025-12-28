@@ -30,6 +30,7 @@ MINY=""
 MAXX=""
 MAXY=""
 
+DODGE=1
 HOVER=1
 SIGNAL=1
 INTERVAL=1
@@ -44,6 +45,7 @@ _IS_HIDDEN=1
 _DOES_PEEK=0
 _HAS_REGION=1
 _WAIT_PID=""
+_XEV_PID=""
 _PID_FILE=""
 
 
@@ -161,6 +163,9 @@ argparse() {
             "-H"|"--hover")
                 HOVER=0
                 ;;
+            "-D"|"--dodge")
+                DODGE=0
+                ;;
             "-S"|"--signal")
                 SIGNAL=0
                 ;;
@@ -260,8 +265,8 @@ argparse() {
     fi
 
     if [ $TOGGLE -ne 0 ] && [ $TOGGLE_PEEK -ne 0 ] && [ $SIGNAL -ne 0 ] \
-            && [ $_HAS_REGION -ne 0 ] && [ $HOVER -ne 0 ]; then
-        printf "At least one of --toggle, --signal, --hover or" 1>&2
+            && [ $_HAS_REGION -ne 0 ] && [ $HOVER -ne 0 ] && [ $DODGE -ne 0]; then
+        printf "At least one of --toggle, --signal, --hover, --dodge or" 1>&2
         printf " --region is required!\n" 1>&2
         exit 1
     fi
@@ -580,6 +585,68 @@ function serve_xev() {
     done
 }
 
+# Action parameter:
+# 0: stop
+# 1: start
+function toggle_mouse_listener() {
+    local action=$1
+
+    if [ $action -eq 1 ]; then
+        if [ -z "$_XEV_PID" ]; then
+            hide_window 0
+            # create and store serve_xev process pid
+            serve_xev &
+            _XEV_PID=$!
+        fi
+    elif [ $action -eq 0 ]; then
+        if [ -n "$_XEV_PID" ]; then
+            # kill serve_xev process 
+            pkill -P "$_XEV_PID" 2>/dev/null
+            kill "$_XEV_PID" 2>/dev/null
+            # clear restore states
+            _XEV_PID=""
+            hide_window 1
+        fi
+
+    else
+        printf "Invalid $action parameter.\n" 1>&2
+    fi
+}
+
+function serve_dodge() {
+    trap "toggle_mouse_listener 0; exit" SIGINT SIGTERM EXIT
+
+    fetch_window_dimensions
+    MINX=$WIN_POSX
+    MINY=$WIN_POSY
+    MAXX=$(($MINX+$WIN_WIDTH))
+    MAXY=$(($MINY+$WIN_HEIGHT))
+
+    if [ $_IS_HIDDEN -eq 0 ]; then
+        hide_window 1
+    fi
+    
+    while true; do
+            
+        local ACTIVE_WIN=$(xdotool getactivewindow 2>/dev/null)
+            
+        if [ -n "$ACTIVE_WIN" ] && [ "$ACTIVE_WIN" != "$WIN_ID" ]; then
+            eval $(xdotool getwindowgeometry --shell "$ACTIVE_WIN")
+            # If the window overlaps the area and is not the desktop
+            local WIN_TYPE=$(xprop -id "$ACTIVE_WIN" _NET_WM_WINDOW_TYPE 2>/dev/null)
+            if [[ "$WIN_TYPE" != *"_NET_WM_WINDOW_TYPE_DESKTOP"* ]] && \
+            [ "$Y" -lt "$MAXY" ] && [ $((Y + HEIGHT)) -gt "$MINY" ]; then
+                # Start the process to check if the mouse is over the panel
+                toggle_mouse_listener 1
+            else 
+                toggle_mouse_listener 0
+            fi
+        fi
+
+        sleep $INTERVAL
+    done
+}
+
 
 function restore() {
     # Called by trap once we receive an EXIT
@@ -645,10 +712,12 @@ function main() {
     fetch_screen_dimensions
 
     trap restore EXIT
-
-    printf "Initially hiding window...\n"
-    hide_window 0
-
+    
+    if [ $DODGE -ne 0 ]; then
+        printf "Initially hiding window...\n"
+        hide_window 0
+    fi
+    
     # Save our pid into a file
     echo "$$" > /tmp/hideIt-${WIN_ID}.pid
     trap toggle_peek SIGUSR2
@@ -670,6 +739,10 @@ function main() {
     elif [ $HOVER -eq 0 ]; then
         printf "Waiting for HOVER...\n"
         serve_xev &
+        _WAIT_PID=$!
+    elif [ $DODGE -eq 0 ]; then
+        printf "Waiting for DODGE...\n"
+        serve_dodge &
         _WAIT_PID=$!
     fi
 
