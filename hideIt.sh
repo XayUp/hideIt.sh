@@ -216,6 +216,9 @@ argparse() {
                     printf "Peek should be a number. " 1>&2
                     exit 1
                 fi
+                # Set PEEK to 1 if the provided value is 0 or less to ensure the automation
+                # continues to function.
+                [[ "$PEEK" -le 0 ]] && PEEK=1
                 shift
                 ;;
             "-d"|"--direction")
@@ -490,11 +493,24 @@ function hide_window() {
         fi
     fi
 
+
     # In case we hid the window, try to give focus to whatever is
     # underneath the cursor.
     if [ $hide -eq 0 ]; then
         eval $(xdotool getmouselocation --shell)
         xdotool windowactivate $WINDOW > /dev/null 2>&1
+        # The use of xprop is to simulate the bar leaving the screen when peek is 0.
+        # Normally, the mouse cannot trigger the bar if it's outside the screen's viewport.
+        # Therefore, PEEK is forced to 1 if the -peek/-p flag is 0 or less;
+        # this ensures 1px of the bar remains within the visible area while
+        # staying transparent to remain hidden from the user.
+        if [ $PEEK -eq 1 ]; then
+            xprop -id $WIN_ID -f _NET_WM_WINDOW_OPACITY 32c -set _NET_WM_WINDOW_OPACITY 0 
+        fi
+    else
+        if [ $PEEK -eq 1 ]; then
+            xprop -id $WIN_ID -f _NET_WM_WINDOW_OPACITY 32c -set _NET_WM_WINDOW_OPACITY 0xffffffff
+        fi
     fi
 }
 
@@ -631,15 +647,35 @@ function serve_dodge() {
         local ACTIVE_WIN=$(xdotool getactivewindow 2>/dev/null)
             
         if [ -n "$ACTIVE_WIN" ] && [ "$ACTIVE_WIN" != "$WIN_ID" ]; then
-            eval $(xdotool getwindowgeometry --shell "$ACTIVE_WIN")
-            # If the window overlaps the area and is not the desktop
+            # Get active window information using xwininfo for precise
+            # coordinates and window decoration (frame) data.
+            local info=$(xwininfo -id "$ACTIVE_WIN")
+            # Calculate the true coordinates for each corner to
+            # determine the actual area occupied by the active window.
+            local abs_X=$(echo "$info" | grep "Absolute upper-left X" | awk '{print $4}')
+            local abs_Y=$(echo "$info" | grep "Absolute upper-left Y" | awk '{print $4}')
+            local rel_X=$(echo "$info" | grep "Relative upper-left X" | awk '{print $4}')
+            local rel_Y=$(echo "$info" | grep "Relative upper-left Y" | awk '{print $4}')
+            local win_w=$(echo "$info" | grep "Width" | awk '{print $2}')
+            local win_h=$(echo "$info" | grep "Height" | awk '{print $2}')
+
+            local win_x1=$((abs_X - rel_X))
+            local win_y1=$((abs_Y - rel_Y))
+            local win_x2=$((win_x1 + win_w + (rel_X * 2))) # Aproximação da largura total com bordas
+            local win_y2=$((win_y1 + win_h + (rel_Y + rel_X))) # Aproximação da altura total
+
             local WIN_TYPE=$(xprop -id "$ACTIVE_WIN" _NET_WM_WINDOW_TYPE 2>/dev/null)
-            if [[ "$WIN_TYPE" != *"_NET_WM_WINDOW_TYPE_DESKTOP"* ]] && \
-            [ "$Y" -lt "$MAXY" ] && [ $((Y + HEIGHT)) -gt "$MINY" ]; then
-                # Start the process to check if the mouse is over the panel
-                toggle_mouse_listener 1
-            else 
-                toggle_mouse_listener 0
+
+            if [[ "$WIN_TYPE" != *"_NET_WM_WINDOW_TYPE_DESKTOP"* ]]; then
+                #Only perform area intersection checks if the target
+                # is a valid window.
+                # (Tested on XFCE; compatibility with other DEs is unconfirmed)."
+                if [ "$win_x1" -lt "$MAXX" ] && [ "$win_x2" -gt "$MINX" ] && \
+                [ "$win_y1" -lt "$MAXY" ] && [ "$win_y2" -gt "$MINY" ]; then
+                    toggle_mouse_listener 1
+                else
+                    toggle_mouse_listener 0
+                fi
             fi
         fi
 
