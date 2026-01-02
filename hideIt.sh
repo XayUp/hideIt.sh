@@ -84,6 +84,12 @@ usage() {
     printf "   This will only work if --peek is greater 0.\n"
     printf "   By default, hover is off.\n"
     printf "\n"
+    printf " -D, --dodge\n"
+    printf "   Hide the window if the active window overlaps it.\n"
+    printf "   When hidden, hovering the window (peek) will show it.\n"
+    printf "   If --region was defined, --dodge will be ignored!\n"
+    printf "   By default, dodge is off.\n"
+    printf "\n"
     printf " -S, --signal\n"
     printf "   Toggle the visibility by sending a 'SIGUSR1' signal.\n"
     printf "   Both --region and --hover will be ignored.\n"
@@ -643,43 +649,44 @@ function serve_dodge() {
     fi
     
     while true; do
+        sleep $INTERVAL
             
         local ACTIVE_WIN=$(xdotool getactivewindow 2>/dev/null)
             
         if [ -n "$ACTIVE_WIN" ] && [ "$ACTIVE_WIN" != "$WIN_ID" ]; then
-            # Get active window information using xwininfo for precise
-            # coordinates and window decoration (frame) data.
-            local info=$(xwininfo -id "$ACTIVE_WIN")
-            # Calculate the true coordinates for each corner to
-            # determine the actual area occupied by the active window.
-            local abs_X=$(echo "$info" | grep "Absolute upper-left X" | awk '{print $4}')
-            local abs_Y=$(echo "$info" | grep "Absolute upper-left Y" | awk '{print $4}')
-            local rel_X=$(echo "$info" | grep "Relative upper-left X" | awk '{print $4}')
-            local rel_Y=$(echo "$info" | grep "Relative upper-left Y" | awk '{print $4}')
-            local win_w=$(echo "$info" | grep "Width" | awk '{print $2}')
-            local win_h=$(echo "$info" | grep "Height" | awk '{print $2}')
-
-            local win_x1=$((abs_X - rel_X))
-            local win_y1=$((abs_Y - rel_Y))
-            local win_x2=$((win_x1 + win_w + (rel_X * 2))) # Aproximação da largura total com bordas
-            local win_y2=$((win_y1 + win_h + (rel_Y + rel_X))) # Aproximação da altura total
-
+            
             local WIN_TYPE=$(xprop -id "$ACTIVE_WIN" _NET_WM_WINDOW_TYPE 2>/dev/null)
 
             if [[ "$WIN_TYPE" != *"_NET_WM_WINDOW_TYPE_DESKTOP"* ]]; then
-                #Only perform area intersection checks if the target
-                # is a valid window.
-                # (Tested on XFCE; compatibility with other DEs is unconfirmed)."
-                if [ "$win_x1" -lt "$MAXX" ] && [ "$win_x2" -gt "$MINX" ] && \
-                [ "$win_y1" -lt "$MAXY" ] && [ "$win_y2" -gt "$MINY" ]; then
-                    toggle_mouse_listener 1
-                else
-                    toggle_mouse_listener 0
+                # Get active window information using xwininfo
+                local info=$(xwininfo -id "$ACTIVE_WIN")
+                
+                if [ -n "$info" ]; then
+                    # Parse dimensions efficiently
+                    read abs_X abs_Y rel_X rel_Y win_w win_h <<< $(echo "$info" | awk '
+                        /Absolute upper-left X/ { ax=$4 }
+                        /Absolute upper-left Y/ { ay=$4 }
+                        /Relative upper-left X/ { rx=$4 }
+                        /Relative upper-left Y/ { ry=$4 }
+                        /Width/ { w=$2 }
+                        /Height/ { h=$2 }
+                        END { print ax+0, ay+0, rx+0, ry+0, w+0, h+0 }
+                    ')
+
+                    local win_x1=$((abs_X - rel_X))
+                    local win_y1=$((abs_Y - rel_Y))
+                    local win_x2=$((win_x1 + win_w + (rel_X * 2)))
+                    local win_y2=$((win_y1 + win_h + (rel_Y + rel_X)))
+
+                    if [ "$win_x1" -lt "$MAXX" ] && [ "$win_x2" -gt "$MINX" ] && \
+                       [ "$win_y1" -lt "$MAXY" ] && [ "$win_y2" -gt "$MINY" ]; then
+                        toggle_mouse_listener 1
+                        continue
+                    fi
                 fi
             fi
+            toggle_mouse_listener 0
         fi
-
-        sleep $INTERVAL
     done
 }
 
